@@ -1,0 +1,69 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "pc: cleanup session",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/scripts/cleanup-pc-dev-session.ps1"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "build-server",
+      "type": "shell",
+      "command": "dotnet",
+      "args": [
+        "build"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/PC/QuickShareClone.Server"
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "build-desktop",
+      "type": "shell",
+      "command": "dotnet",
+      "args": [
+        "build"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/PC/QuickShareClone.Desktop"
+      },
+      "dependsOn": [
+        "pc: cleanup session"
+      ],
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "android: all-in-one",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/scripts/android-run-with-logs.ps1"
+      ],
+      "problemMatcher": [],
+      "isBackground": true
+    },
+    {
+      "label": "pc: run desktop",
+      "type": "shell",
+      "command": "dotnet",
+      "args": [
+        "run"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/PC/QuickShareClone.Desktop"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

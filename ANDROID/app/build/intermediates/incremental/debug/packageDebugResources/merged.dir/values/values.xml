@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Quick Share Clone</string>
+    <string name="waiting_for_share">Waiting for shared files...</string>
+    <style name="Theme.QuickShareClone" parent="Theme.Material3.DayNight.NoActionBar"/>
+</resources>

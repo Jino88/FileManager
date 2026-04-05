@@ -1,0 +1,38 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "PC Desktop (.NET)",
+      "type": "coreclr",
+      "request": "launch",
+      "program": "${workspaceFolder}/PC/QuickShareClone.Desktop/bin/Debug/net8.0-windows/QuickShareClone.Desktop.dll",
+      "cwd": "${workspaceFolder}/PC/QuickShareClone.Desktop",
+      "preLaunchTask": "build-desktop",
+      "console": "integratedTerminal",
+      "stopAtEntry": false
+    },
+    {
+      "name": "Android All-in-One",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/scripts/android-run-with-logs.ps1"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Run PC + Android + Logs",
+      "configurations": [
+        "PC Desktop (.NET)",
+        "Android All-in-One"
+      ]
+    }
+  ]
+}
