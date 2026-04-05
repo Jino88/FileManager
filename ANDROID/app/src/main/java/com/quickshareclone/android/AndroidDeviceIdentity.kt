@@ -13,6 +13,8 @@ object AndroidDeviceIdentity {
 
     fun deviceName(): String = listOfNotNull(Build.MANUFACTURER, Build.MODEL)
         .joinToString(" ")
+        .replace(Regex("\\p{C}+"), " ")
+        .replace(Regex("\\s+"), " ")
         .trim()
         .ifBlank { "Android Device" }
 

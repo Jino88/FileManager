@@ -5,6 +5,7 @@ namespace QuickShareClone.Server;
 public sealed class AndroidOutboundTransferStore
 {
     private readonly ConcurrentDictionary<string, AndroidOutboundTransfer> _transfers = new();
+    private readonly ConcurrentDictionary<string, List<string>> _offerTransfers = new();
 
     public AndroidOutboundTransfer Start(string deviceId, string deviceName, string fileName, long totalBytes)
     {
@@ -20,6 +21,83 @@ public sealed class AndroidOutboundTransferStore
 
         _transfers[transfer.TransferId] = transfer;
         return transfer;
+    }
+
+    public void RegisterPendingOffer(string offerId, string deviceId, string deviceName, IReadOnlyCollection<AndroidTransferOfferFile> files, string statusText)
+    {
+        var transferIds = new List<string>(files.Count);
+        foreach (var file in files)
+        {
+            var transfer = new AndroidOutboundTransfer
+            {
+                TransferId = Guid.NewGuid().ToString("N"),
+                DeviceId = deviceId,
+                DeviceName = deviceName,
+                FileName = file.FileName,
+                TotalBytes = file.FileSizeBytes,
+                StatusText = statusText
+            };
+
+            _transfers[transfer.TransferId] = transfer;
+            transferIds.Add(transfer.TransferId);
+        }
+
+        _offerTransfers[offerId] = transferIds;
+    }
+
+    public AndroidOutboundTransfer GetOrAttachToOffer(string offerId, string deviceId, string deviceName, string fileName, long totalBytes)
+    {
+        if (_offerTransfers.TryGetValue(offerId, out var transferIds))
+        {
+            foreach (var transferId in transferIds)
+            {
+                if (!_transfers.TryGetValue(transferId, out var transfer))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(transfer.FileName, fileName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                lock (transfer)
+                {
+                    transfer.DeviceId = deviceId;
+                    transfer.DeviceName = deviceName;
+                    transfer.TotalBytes = totalBytes;
+                    transfer.StatusText = "Sending to Android";
+                    transfer.UpdatedAt = DateTimeOffset.UtcNow;
+                }
+
+                return transfer;
+            }
+        }
+
+        return Start(deviceId, deviceName, fileName, totalBytes);
+    }
+
+    public void UpdateOfferStatus(string offerId, string statusText, bool isCompleted = false)
+    {
+        if (!_offerTransfers.TryGetValue(offerId, out var transferIds))
+        {
+            return;
+        }
+
+        foreach (var transferId in transferIds)
+        {
+            if (!_transfers.TryGetValue(transferId, out var transfer))
+            {
+                continue;
+            }
+
+            lock (transfer)
+            {
+                transfer.StatusText = statusText;
+                transfer.IsCompleted = isCompleted;
+                transfer.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+        }
     }
 
     public void UpdateProgress(string transferId, long sentBytes, string? statusText = null)

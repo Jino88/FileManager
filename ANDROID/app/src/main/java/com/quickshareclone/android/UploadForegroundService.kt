@@ -25,6 +25,8 @@ class UploadForegroundService : Service() {
     private val repository by lazy { UploadRepository(applicationContext) }
     private val json = Json
     private val tag = "QuickShareUpload"
+    private var lastNotificationProgress = -1
+    private var lastNotificationFileName: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -41,7 +43,7 @@ class UploadForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification("Preparing transfer...", 0, true))
+        updateForegroundNotification("Preparing transfer...", 0, true, force = true)
         UploadStatusBus.update(
             UploadServiceStatus(
                 isUploading = true,
@@ -59,7 +61,6 @@ class UploadForegroundService : Service() {
 
                 repository.uploadFiles(serverUrl, files) { progress ->
                     val content = "Sending to $endpointLabel - ${progress.fileName}"
-                    val notification = buildNotification(content, progress.progressPercent, true)
                     UploadStatusBus.update(
                         UploadServiceStatus(
                             isUploading = true,
@@ -69,7 +70,7 @@ class UploadForegroundService : Service() {
                             errorMessage = null
                         )
                     )
-                    getNotificationManager().notify(NOTIFICATION_ID, notification)
+                    updateForegroundNotification(content, progress.progressPercent, true)
                 }
 
                 UploadStatusBus.update(
@@ -137,7 +138,9 @@ class UploadForegroundService : Service() {
             .setOnlyAlertOnce(true)
             .setOngoing(ongoing)
             .setAutoCancel(!ongoing)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setProgress(
                 if (ongoing) 100 else 0,
                 if (ongoing) progressPercent.coerceIn(0, 100) else 0,
@@ -154,7 +157,7 @@ class UploadForegroundService : Service() {
         val channel = NotificationChannel(
             CHANNEL_ID,
             "Quick Share Transfers",
-            NotificationManager.IMPORTANCE_LOW
+            NotificationManager.IMPORTANCE_HIGH
         ).apply {
             description = "Shows background file transfer progress"
         }
@@ -164,6 +167,31 @@ class UploadForegroundService : Service() {
 
     private fun getNotificationManager(): NotificationManager =
         getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+    private fun updateForegroundNotification(
+        contentText: String,
+        progressPercent: Int,
+        ongoing: Boolean,
+        force: Boolean = false
+    ) {
+        val normalizedProgress = progressPercent.coerceIn(0, 100)
+        val currentFileName = contentText.substringAfterLast(" - ", missingDelimiterValue = contentText)
+        val shouldUpdate = force ||
+            normalizedProgress >= 100 ||
+            normalizedProgress <= 0 ||
+            normalizedProgress != lastNotificationProgress ||
+            currentFileName != lastNotificationFileName
+
+        if (!shouldUpdate) {
+            return
+        }
+
+        lastNotificationProgress = normalizedProgress
+        lastNotificationFileName = currentFileName
+        val notification = buildNotification(contentText, normalizedProgress, ongoing)
+        startForeground(NOTIFICATION_ID, notification)
+        getNotificationManager().notify(NOTIFICATION_ID, notification)
+    }
 
     companion object {
         private const val CHANNEL_ID = "quick_share_transfers"

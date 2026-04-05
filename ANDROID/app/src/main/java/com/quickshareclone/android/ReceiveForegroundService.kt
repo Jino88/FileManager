@@ -54,7 +54,7 @@ class ReceiveForegroundService : Service() {
                 soTimeout = 1000
             }
             serverSocket = socket
-            Log.d(tag, "Android receive server listening on ${AndroidDeviceIdentity.receiveUrl(UploadConfig.receivePort)}")
+            logDebug("Android receive server listening on ${AndroidDeviceIdentity.receiveUrl(UploadConfig.receivePort)}")
 
             while (!socket.isClosed) {
                 try {
@@ -63,12 +63,12 @@ class ReceiveForegroundService : Service() {
                 } catch (_: SocketTimeoutException) {
                 } catch (error: Exception) {
                     if (!socket.isClosed) {
-                        Log.w(tag, "Receive server accept failed", error)
+                        logWarn("Receive server accept failed", error)
                     }
                 }
             }
         } catch (error: Exception) {
-            Log.e(tag, "Failed to start receive server", error)
+            logError("Failed to start receive server", error)
         }
     }
 
@@ -84,6 +84,7 @@ class ReceiveForegroundService : Service() {
                 }
 
                 val request = parseRequest(headerText)
+                logDebug("Inbound request ${request.method} ${request.path}")
                 when {
                     request.method == "GET" && request.path == "/api/device/ping" -> {
                         writeResponse(output, 200, """{"status":"ok"}""")
@@ -106,7 +107,7 @@ class ReceiveForegroundService : Service() {
                     }
                 }
             } catch (error: Exception) {
-                Log.e(tag, "Failed to handle inbound PC transfer", error)
+                logError("Failed to handle inbound PC transfer", error)
                 val message = error.message ?: "Server error"
                 runCatching {
                     writeResponse(client.getOutputStream(), 500, """{"message":"$message"}""")
@@ -119,6 +120,7 @@ class ReceiveForegroundService : Service() {
         val fileName = decodeFileName(headers)
         val contentType = headers["content-type"]
         val contentLength = headers["content-length"]?.toLongOrNull() ?: 0L
+        logDebug("Receive request for file=$fileName, bytes=$contentLength")
         if (contentLength <= 0) {
             writeResponse(output, 400, """{"message":"Missing content-length"}""")
             return
@@ -126,6 +128,7 @@ class ReceiveForegroundService : Service() {
 
         val offerId = headers["x-quickshare-offer-id"]
         val isPreApproved = !offerId.isNullOrBlank() && InboundTransferCoordinator.consumeApprovedOffer(offerId)
+        logDebug("Receive request preApproved=$isPreApproved, offerId=${offerId ?: "none"}")
         if (!isPreApproved) {
             requestUserApproval(fileName, contentLength)
         }
@@ -157,7 +160,7 @@ class ReceiveForegroundService : Service() {
             updateForegroundNotification("Receiving $fileName", progress, true)
         }
 
-        Log.d(tag, "Received $fileName from PC and saved to $savedPath")
+        logDebug("Received $fileName from PC and saved to $savedPath")
         UploadStatusBus.update(
             UploadServiceStatus(
                 isUploading = false,
@@ -177,6 +180,7 @@ class ReceiveForegroundService : Service() {
 
     private fun handleOfferRequest(headers: Map<String, String>, input: InputStream, output: OutputStream) {
         val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
+        logDebug("Offer request received with contentLength=$contentLength")
         if (contentLength <= 0) {
             writeResponse(output, 400, """{"message":"Missing offer body"}""")
             return
@@ -205,11 +209,14 @@ class ReceiveForegroundService : Service() {
         }
 
         if (offerId.isBlank() || fileCount <= 0) {
+            logWarn("Invalid offer payload: $payload")
             writeResponse(output, 400, """{"message":"Invalid offer payload"}""")
             return
         }
 
+        logDebug("Offer parsed: offerId=$offerId, fileCount=$fileCount, totalBytes=$totalBytes")
         requestBatchApproval(offerId, fileCount, totalBytes, fileNames)
+        logDebug("Offer accepted for review, popup will be shown for offerId=$offerId")
         writeResponse(output, 202, """{"offerId":"$offerId","status":"pending"}""")
     }
 
@@ -221,6 +228,7 @@ class ReceiveForegroundService : Service() {
         }
 
         val status = InboundTransferCoordinator.getOfferStatus(offerId)
+        logDebug("Offer status requested: offerId=$offerId status=$status")
         val statusCode = when (status) {
             "approved", "pending" -> 200
             "declined" -> 409
@@ -241,6 +249,7 @@ class ReceiveForegroundService : Service() {
     }
 
     private fun requestUserApproval(fileName: String, contentLength: Long) {
+        logDebug("Showing per-file approval dialog for $fileName ($contentLength bytes)")
         val approval = InboundTransferCoordinator.requestApproval(fileName, contentLength)
         val approved = awaitApproval(approval, fileName)
         if (!approved) {
@@ -249,6 +258,7 @@ class ReceiveForegroundService : Service() {
     }
 
     private fun requestBatchApproval(offerId: String, fileCount: Int, totalSizeBytes: Long, fileNames: List<String>) {
+        logDebug("Showing batch approval dialog for offerId=$offerId fileCount=$fileCount totalBytes=$totalSizeBytes")
         val approval = InboundTransferCoordinator.requestBatchApproval(offerId, fileCount, totalSizeBytes, fileNames)
         val label = if (fileCount > 1) "$fileCount files" else fileNames.firstOrNull().orEmpty()
         executor.execute {
@@ -257,6 +267,7 @@ class ReceiveForegroundService : Service() {
     }
 
     private fun awaitApproval(approval: kotlinx.coroutines.CompletableDeferred<Boolean>, label: String): Boolean {
+        logDebug("Waiting for user approval: $label")
         UploadStatusBus.update(
             UploadServiceStatus(
                 isUploading = true,
@@ -276,6 +287,7 @@ class ReceiveForegroundService : Service() {
                 approval.await()
             }
         } ?: false
+        logDebug("User approval result for $label: $approved")
 
         if (!approved) {
             UploadStatusBus.update(
@@ -386,6 +398,20 @@ class ReceiveForegroundService : Service() {
             .setProgress(if (ongoing) 100 else 0, if (ongoing) progressPercent else 0, false)
             .build()
     }
+
+    private fun logDebug(message: String) {
+        Log.d(tag, "${timestamp()} $message")
+    }
+
+    private fun logWarn(message: String, throwable: Throwable? = null) {
+        Log.w(tag, "${timestamp()} $message", throwable)
+    }
+
+    private fun logError(message: String, throwable: Throwable? = null) {
+        Log.e(tag, "${timestamp()} $message", throwable)
+    }
+
+    private fun timestamp(): String = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
 
     private fun updateForegroundNotification(contentText: String, progressPercent: Int, ongoing: Boolean) {
         val notification = buildNotification(contentText, progressPercent, ongoing)

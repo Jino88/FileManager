@@ -10,10 +10,14 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.io.FileOutputStream
+import okio.BufferedSink
+import okio.ForwardingSink
+import okio.buffer
 import kotlin.math.ceil
 
 class UploadRepository(
@@ -50,6 +54,7 @@ class UploadRepository(
             val buffer = ByteArray(UploadConfig.chunkSizeBytes)
             var chunkIndex = 0
             var bytesRead: Int
+            var uploadedBytes = 0L
 
             while (input.read(buffer).also { bytesRead = it } != -1) {
                 if (chunkIndex !in received) {
@@ -57,15 +62,29 @@ class UploadRepository(
                     try {
                         val advertisedTotalChunks = maxOf(estimatedTotalChunks, chunkIndex + 1)
                         Log.d(tag, "Uploading chunk $chunkIndex/$advertisedTotalChunks for ${file.fileName}")
-                        uploadChunkWithRetry(serverBaseUrl, file, chunkIndex, advertisedTotalChunks, tempChunk)
+                        uploadChunkWithRetry(serverBaseUrl, file, chunkIndex, advertisedTotalChunks, tempChunk) { chunkSentBytes ->
+                            if (resolvedSizeBytes <= 0L) {
+                                return@uploadChunkWithRetry
+                            }
+
+                            val progress = (((uploadedBytes + chunkSentBytes).toDouble() / resolvedSizeBytes.toDouble()) * 100.0)
+                                .toInt()
+                                .coerceIn(0, 99)
+                            onProgress(progress)
+                        }
                     } finally {
                         tempChunk.delete()
                     }
                 }
 
+                uploadedBytes += bytesRead.toLong()
                 chunkIndex++
-                val progressTotal = maxOf(estimatedTotalChunks, chunkIndex)
-                onProgress(((chunkIndex.toDouble() / progressTotal.toDouble()) * 100).toInt().coerceIn(0, 99))
+                if (resolvedSizeBytes > 0L) {
+                    onProgress(((uploadedBytes.toDouble() / resolvedSizeBytes.toDouble()) * 100).toInt().coerceIn(0, 99))
+                } else {
+                    val progressTotal = maxOf(estimatedTotalChunks, chunkIndex)
+                    onProgress(((chunkIndex.toDouble() / progressTotal.toDouble()) * 100).toInt().coerceIn(0, 99))
+                }
             }
 
             onProgress(100)
@@ -151,12 +170,13 @@ class UploadRepository(
         file: SharedFileDescriptor,
         chunkIndex: Int,
         totalChunks: Int,
-        tempChunk: File
+        tempChunk: File,
+        onChunkProgress: (Long) -> Unit
     ) {
         var lastError: Exception? = null
         repeat(UploadConfig.maxChunkRetries) {
             try {
-                uploadChunk(serverBaseUrl, file, chunkIndex, totalChunks, tempChunk)
+                uploadChunk(serverBaseUrl, file, chunkIndex, totalChunks, tempChunk, onChunkProgress)
                 return
             } catch (ex: Exception) {
                 lastError = ex
@@ -165,14 +185,28 @@ class UploadRepository(
         throw lastError ?: IllegalStateException("Chunk upload failed")
     }
 
-    private fun uploadChunk(serverBaseUrl: String, file: SharedFileDescriptor, chunkIndex: Int, totalChunks: Int, tempChunk: File) {
+    private fun uploadChunk(
+        serverBaseUrl: String,
+        file: SharedFileDescriptor,
+        chunkIndex: Int,
+        totalChunks: Int,
+        tempChunk: File,
+        onChunkProgress: (Long) -> Unit
+    ) {
         val requestBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("fileId", file.fileId)
             .addFormDataPart("fileName", file.fileName)
             .addFormDataPart("chunkIndex", chunkIndex.toString())
             .addFormDataPart("totalChunks", totalChunks.toString())
-            .addFormDataPart("chunk", tempChunk.name, tempChunk.asRequestBody("application/octet-stream".toMediaType()))
+            .addFormDataPart(
+                "chunk",
+                tempChunk.name,
+                ProgressRequestBody(
+                    tempChunk.asRequestBody("application/octet-stream".toMediaType()),
+                    onChunkProgress
+                )
+            )
             .build()
 
         val request = Request.Builder()
@@ -207,6 +241,30 @@ class UploadRepository(
             if (!response.isSuccessful) return UploadStatusResponse(fileId, emptyList())
             return json.decodeFromString(response.body?.string().orEmpty())
         }
+    }
+}
+
+private class ProgressRequestBody(
+    private val delegate: RequestBody,
+    private val onProgress: (Long) -> Unit
+) : RequestBody() {
+    override fun contentType() = delegate.contentType()
+
+    override fun contentLength() = delegate.contentLength()
+
+    override fun writeTo(sink: BufferedSink) {
+        val countingSink = object : ForwardingSink(sink) {
+            private var sentBytes = 0L
+
+            override fun write(source: okio.Buffer, byteCount: Long) {
+                super.write(source, byteCount)
+                sentBytes += byteCount
+                onProgress(sentBytes)
+            }
+        }.buffer()
+
+        delegate.writeTo(countingSink)
+        countingSink.flush()
     }
 }
 

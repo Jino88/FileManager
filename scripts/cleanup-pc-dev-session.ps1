@@ -3,7 +3,9 @@ $ErrorActionPreference = "Stop"
 
 $patterns = @(
     "QuickShareClone.Desktop",
-    "QuickShareClone.Server"
+    "QuickShareClone.Server",
+    "Microsoft.VisualStudio.ProjectSystem.Server.BuildHost.dll",
+    "MSBuild.dll"
 )
 
 function Test-MatchesProjectPattern {

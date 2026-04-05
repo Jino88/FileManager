@@ -49,6 +49,10 @@ public sealed record AndroidTransferOfferRequest(
     long TotalBytes,
     IReadOnlyCollection<AndroidTransferOfferFile> Files);
 
+public sealed record AndroidBrowserSendOfferRequest(
+    string DeviceId,
+    IReadOnlyCollection<AndroidTransferOfferFile> Files);
+
 public sealed record AndroidTransferOfferFile(
     string FileName,
     long FileSizeBytes);
@@ -90,7 +94,7 @@ public sealed class UploadSession
 public sealed class AndroidOutboundTransfer
 {
     public required string TransferId { get; init; }
-    public required string DeviceId { get; init; }
+    public required string DeviceId { get; set; }
     public required string DeviceName { get; set; }
     public required string FileName { get; set; }
     public long TotalBytes { get; set; }

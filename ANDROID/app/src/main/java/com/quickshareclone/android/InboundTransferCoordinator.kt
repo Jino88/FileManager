@@ -11,6 +11,7 @@ object InboundTransferCoordinator {
     private val pendingApprovals = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
     private val approvedOffers = ConcurrentHashMap<String, Int>()
     private val offerStatuses = ConcurrentHashMap<String, String>()
+    private val batchOfferCounts = ConcurrentHashMap<String, Int>()
     private val _prompt = MutableStateFlow<InboundTransferPrompt?>(null)
     val prompt: StateFlow<InboundTransferPrompt?> = _prompt.asStateFlow()
 
@@ -45,14 +46,15 @@ object InboundTransferCoordinator {
         val deferred = CompletableDeferred<Boolean>()
         pendingApprovals[prompt.requestId] = deferred
         offerStatuses[offerId] = "pending"
+        batchOfferCounts[offerId] = fileCount
         _prompt.value = prompt
         return deferred
     }
 
     fun approve(requestId: String) {
-        val prompt = _prompt.value
-        if (prompt?.requestId == requestId && prompt.fileCount > 1) {
-            approvedOffers[requestId] = prompt.fileCount
+        val batchCount = batchOfferCounts.remove(requestId)
+        if (batchCount != null && batchCount > 0) {
+            approvedOffers[requestId] = batchCount
             offerStatuses[requestId] = "approved"
         }
         pendingApprovals.remove(requestId)?.complete(true)
@@ -60,6 +62,7 @@ object InboundTransferCoordinator {
     }
 
     fun decline(requestId: String) {
+        batchOfferCounts.remove(requestId)
         offerStatuses[requestId] = "declined"
         pendingApprovals.remove(requestId)?.complete(false)
         clear(requestId)
@@ -75,6 +78,7 @@ object InboundTransferCoordinator {
         val remaining = approvedOffers[offerId] ?: return false
         return if (remaining <= 1) {
             approvedOffers.remove(offerId)
+            offerStatuses.remove(offerId)
             true
         } else {
             approvedOffers[offerId] = remaining - 1

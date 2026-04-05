@@ -2,9 +2,15 @@ using Microsoft.AspNetCore.Http.Features;
 using QuickShareClone.Server;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text.Json.Serialization;
 using System.Text;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
+var jsonOptions = new JsonSerializerOptions
+{
+    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+};
 builder.WebHost.ConfigureKestrel(options =>
 {
     options.Limits.MaxRequestBodySize = null;
@@ -18,6 +24,7 @@ builder.Services.AddSingleton<ChunkFileService>();
 builder.Services.AddSingleton<DeviceIdentityService>();
 builder.Services.AddSingleton<AndroidDeviceStore>();
 builder.Services.AddSingleton<AndroidOutboundTransferStore>();
+builder.Services.AddSingleton<DesktopFileSelectionStore>();
 builder.Services.AddHostedService<CleanupService>();
 builder.Services.AddHostedService<DiscoveryBroadcastService>();
 
@@ -61,6 +68,12 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
               margin: 0 auto;
               padding: 32px 24px 48px;
             }
+            .top-grid {
+              display: grid;
+              grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+              gap: 20px;
+              align-items: start;
+            }
             .panel {
               background: var(--panel);
               backdrop-filter: blur(18px);
@@ -68,35 +81,16 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
               box-shadow: 0 20px 70px rgba(25, 33, 61, .10);
               border-radius: 28px;
             }
-            .hero { margin-bottom: 20px; }
-            .eyebrow {
-              display: inline-block;
-              padding: 8px 12px;
-              background: rgba(15,118,110,.10);
-              color: var(--accent);
-              border-radius: 999px;
-              font-size: 12px;
-              font-weight: 700;
-              letter-spacing: .08em;
-              text-transform: uppercase;
-            }
-            h1 { margin: 16px 0 12px; font-size: 46px; line-height: 1; }
-            p { margin: 0; color: var(--muted); line-height: 1.5; }
-            .stats {
-              display: grid;
-              grid-template-columns: repeat(2, minmax(0, 1fr));
-              gap: 12px;
-            }
-            .stat {
-              padding: 18px;
-              background: rgba(255,255,255,.82);
-              border: 1px solid var(--line);
-              border-radius: 22px;
-            }
-            .stat strong { display: block; font-size: 28px; margin-bottom: 8px; }
             .grid { display: grid; gap: 20px; }
             .panel { padding: 22px; }
             .panel h2 { margin: 0 0 16px; font-size: 20px; }
+            .section-head {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              gap: 12px;
+              margin-bottom: 16px;
+            }
             .device-pill, .url-chip {
               display: inline-flex;
               align-items: center;
@@ -119,11 +113,26 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
               background: rgba(255,255,255,.75);
               border: 1px solid var(--line);
             }
+            .session-item.outbound {
+              border-left: 4px solid rgba(15,118,110,.45);
+            }
+            .session-item.inbound {
+              border-left: 4px solid rgba(249,115,22,.5);
+            }
             .device-item {
               padding: 16px;
               border-radius: 22px;
               background: rgba(255,255,255,.75);
               border: 1px solid var(--line);
+              cursor: pointer;
+              transition: border-color .18s ease, transform .18s ease, background .18s ease;
+            }
+            .device-item:hover {
+              transform: translateY(-1px);
+            }
+            .device-item.selected {
+              border-color: rgba(15,118,110,.45);
+              background: rgba(255,247,237,.92);
             }
             .session-footer {
               display: flex;
@@ -148,6 +157,11 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
               color: white;
               font-weight: 700;
               cursor: pointer;
+            }
+            .button.secondary {
+              background: rgba(15,118,110,.10);
+              color: var(--accent);
+              border: 1px solid rgba(15,118,110,.18);
             }
             .button:disabled {
               opacity: .5;
@@ -178,62 +192,57 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
               background: rgba(255,255,255,.6);
               color: var(--muted);
             }
-            @media (max-width: 860px) { h1 { font-size: 36px; } }
+            .direction {
+              display: inline-flex;
+              align-items: center;
+              gap: 8px;
+              font-weight: 700;
+            }
+            .device-status {
+              display: inline-flex;
+              align-items: center;
+              gap: 8px;
+              color: var(--muted);
+              font-size: 13px;
+              font-weight: 600;
+              margin-top: 10px;
+            }
+            @media (max-width: 860px) {
+              .top-grid {
+                grid-template-columns: 1fr;
+              }
+            }
           </style>
         </head>
         <body>
           <div class="shell">
-            <section class="panel hero">
-              <div>
-                <span class="eyebrow">Nearby Share Node</span>
-                <h1>{{device.DeviceName}}</h1>
-                <p>{{primaryUrl}}</p>
-              </div>
-              <div class="stats">
-                <div class="stat">
-                  <strong id="sessionCount">0</strong>
-                  <span class="muted">active upload sessions</span>
+            <div class="top-grid">
+              <section class="panel">
+                <div class="section-head">
+                  <h2 style="margin:0">Connection Devices</h2>
+                  <button id="refreshAndroidButton" class="button secondary" type="button">Refresh Devices</button>
                 </div>
-                <div class="stat">
-                  <strong id="completedCount">0</strong>
-                  <span class="muted">completed transfers</span>
+                <div id="androidDevices" class="session-list">
+                  <div class="empty">No Android devices have registered yet.</div>
                 </div>
-                <div class="stat">
-                  <strong id="androidCount">0</strong>
-                  <span class="muted">connected Android devices</span>
-                </div>
-                <div class="stat">
-                  <strong>UDP {{builder.Configuration["DiscoveryOptions:BroadcastPort"] ?? "37845"}}</strong>
-                  <span class="muted">beacon port</span>
-                </div>
-              </div>
-            </section>
+              </section>
 
-            <section class="panel">
-              <h2>Connected Android</h2>
-              <div id="androidDevices" class="session-list">
-                <div class="empty">No Android devices have registered yet.</div>
-              </div>
-            </section>
-
-            <section class="panel" style="margin-top:20px">
-              <h2>Send To Android</h2>
-              <form id="sendToAndroidForm" style="display:grid; gap:12px;">
-                <select id="androidDeviceSelect" class="field">
-                  <option value="">Choose an Android device</option>
-                </select>
-                <input id="androidFileInput" class="field" type="file" multiple>
-                <button id="androidSendButton" class="button" type="submit">Send To Android</button>
-                <div id="androidSendStatus" class="muted">Open the Android app first so it can register with this PC.</div>
-              </form>
-            </section>
+              <section class="panel">
+                <h2>Send To Android</h2>
+                <form id="sendToAndroidForm" style="display:grid; gap:12px;">
+                  <select id="androidDeviceSelect" class="field">
+                    <option value="">Choose an Android device</option>
+                  </select>
+                  <input id="androidFileInput" class="field" type="file" multiple>
+                  <button id="androidSendButton" class="button" type="submit">Send To Android</button>
+                  <div id="androidSendStatus" class="muted">Open the Android app first so it can register with this PC.</div>
+                </form>
+              </section>
+            </div>
 
             <section class="panel" style="margin-top:20px">
               <h2>Transfer History</h2>
-              <div id="androidOutboundTransfers" class="session-list" style="margin-bottom:16px">
-                <div class="empty">No PC to Android transfers yet.</div>
-              </div>
-              <div id="sessions" class="session-list">
+              <div id="history" class="session-list">
                 <div class="empty">Waiting for transfers...</div>
               </div>
             </section>
@@ -242,17 +251,18 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
             async function refreshAndroidDevices() {
               const response = await fetch('/api/android/devices');
               const devices = await response.json();
-              document.getElementById('androidCount').textContent = devices.length;
               const container = document.getElementById('androidDevices');
               const select = document.getElementById('androidDeviceSelect');
               const currentValue = select.value;
+              const selectedDeviceId = currentValue || window.__selectedAndroidDeviceId || '';
 
               select.innerHTML = '<option value="">Choose an Android device</option>' + devices.map(device =>
                 `<option value="${device.deviceId}">${device.deviceName} - ${device.receiveUrl}</option>`
               ).join('');
 
-              if (devices.some(device => device.deviceId === currentValue)) {
-                select.value = currentValue;
+              if (devices.some(device => device.deviceId === selectedDeviceId)) {
+                select.value = selectedDeviceId;
+                window.__selectedAndroidDeviceId = selectedDeviceId;
               }
 
               if (!devices.length) {
@@ -261,7 +271,7 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
               }
 
               container.innerHTML = devices.map(device => `
-                <article class="device-item">
+                <article class="device-item ${device.deviceId === (window.__selectedAndroidDeviceId || '') ? 'selected' : ''}" data-device-id="${device.deviceId}">
                   <header>
                     <div>
                       <strong>${device.deviceName}</strong>
@@ -270,23 +280,31 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
                     <div>${device.platform}</div>
                   </header>
                   <div class="muted">Last seen ${new Date(device.lastSeenAt).toLocaleTimeString()}</div>
+                  <div class="device-status">${device.deviceId === (window.__selectedAndroidDeviceId || '') ? 'Ready to use' : 'Tap to use'}</div>
                 </article>
               `).join('');
+
+              container.querySelectorAll('[data-device-id]').forEach(card => {
+                card.addEventListener('click', () => {
+                  const deviceId = card.getAttribute('data-device-id');
+                  if (!deviceId) {
+                    return;
+                  }
+                  window.__selectedAndroidDeviceId = deviceId;
+                  select.value = deviceId;
+                  refreshAndroidDevices();
+                });
+              });
             }
 
-            async function refreshAndroidOutboundTransfers() {
+            async function fetchAndroidOutboundTransfers() {
               const response = await fetch('/api/android/outbound-transfers');
-              const transfers = await response.json();
-              const container = document.getElementById('androidOutboundTransfers');
+              return await response.json();
+            }
+
+            function renderOutboundHistory(transfers, now) {
               window.__androidOutboundSamples = window.__androidOutboundSamples || {};
-              const now = Date.now();
-
-              if (!transfers.length) {
-                container.innerHTML = '<div class="empty">No PC to Android transfers yet.</div>';
-                return;
-              }
-
-              container.innerHTML = transfers.map(transfer => {
+              return transfers.map(transfer => {
                 const progress = transfer.totalBytes > 0
                   ? Math.round((transfer.sentBytes / transfer.totalBytes) * 100)
                   : 0;
@@ -300,9 +318,10 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
                   : `${speedMBps.toFixed(1)} MB/s (${progress}%)`;
 
                 return `
-                  <article class="session-item">
+                  <article class="session-item outbound">
                     <header>
                       <div>
+                        <div class="direction">ก่ Sent to Android</div>
                         <strong>${transfer.fileName}</strong>
                         <div class="muted">To ${transfer.deviceName}</div>
                       </div>
@@ -315,27 +334,21 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
                     </div>
                   </article>
                 `;
-              }).join('');
+              });
             }
 
             async function refresh() {
-              const [sessionResponse] = await Promise.all([
+              const [sessionResponse, outboundTransfers] = await Promise.all([
                 fetch('/api/upload/sessions'),
                 refreshAndroidDevices(),
-                refreshAndroidOutboundTransfers()
+                fetchAndroidOutboundTransfers()
               ]);
               const sessions = await sessionResponse.json();
               window.__quickShareSamples = window.__quickShareSamples || {};
               const now = Date.now();
-              document.getElementById('sessionCount').textContent = sessions.length;
-              document.getElementById('completedCount').textContent = sessions.filter(x => x.isCompleted).length;
-              const container = document.getElementById('sessions');
-              if (!sessions.length) {
-                container.innerHTML = '<div class="empty">Waiting for transfers...</div>';
-                return;
-              }
-
-              container.innerHTML = sessions.map(session => {
+              const container = document.getElementById('history');
+              const outboundHistory = renderOutboundHistory(outboundTransfers, now);
+              const inboundHistory = sessions.map(session => {
                 const total = session.totalChunks ?? 0;
                 const received = session.receivedChunkCount;
                 const progress = session.totalBytes > 0
@@ -361,9 +374,10 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
                       ? `Destination: ${session.destinationDirectory}`
                       : 'Destination pending');
                 return `
-                  <article class="session-item">
+                  <article class="session-item inbound">
                     <header>
                       <div>
+                        <div class="direction">ก้ Received on PC</div>
                         <strong>${session.fileName}</strong>
                         <div class="muted">${session.fileId}</div>
                       </div>
@@ -377,12 +391,19 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
                     <div class="muted" style="margin-top:8px">${locationText}</div>
                   </article>
                 `;
-              }).join('');
+              });
+
+              const combinedHistory = [...outboundHistory, ...inboundHistory];
+              if (!combinedHistory.length) {
+                container.innerHTML = '<div class="empty">Waiting for transfers...</div>';
+                return;
+              }
+              container.innerHTML = combinedHistory.join('');
             }
 
             document.getElementById('sendToAndroidForm').addEventListener('submit', async (event) => {
               event.preventDefault();
-              const deviceId = document.getElementById('androidDeviceSelect').value;
+              const deviceId = document.getElementById('androidDeviceSelect').value || window.__selectedAndroidDeviceId || '';
               const files = document.getElementById('androidFileInput').files;
               const button = document.getElementById('androidSendButton');
               const status = document.getElementById('androidSendStatus');
@@ -397,14 +418,36 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
                 return;
               }
 
-              const formData = new FormData();
-              formData.append('deviceId', deviceId);
-              Array.from(files).forEach(file => formData.append('files', file, file.name));
-
               button.disabled = true;
-              status.textContent = 'Sending files to Android...';
-
+              status.textContent = 'Step 1/3: Sending transfer request to Android...';
+              fetch(`/api/android/send-clicked?deviceId=${encodeURIComponent(deviceId)}&fileCount=${files.length}`, {
+                method: 'POST'
+              }).catch(() => {});
               try {
+                const offerResponse = await fetch('/api/android/send-offer', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    deviceId,
+                    files: Array.from(files).map(file => ({
+                      fileName: file.name,
+                      fileSizeBytes: file.size
+                    }))
+                  })
+                });
+                const offerResult = await offerResponse.json();
+                if (!offerResponse.ok) {
+                  throw new Error(offerResult.message || 'Android approval failed');
+                }
+
+                status.textContent = 'Step 2/3: Android approved. Uploading files from this PC...';
+                const formData = new FormData();
+                formData.append('deviceId', deviceId);
+                formData.append('offerId', offerResult.offerId);
+                Array.from(files).forEach(file => formData.append('files', file, file.name));
+
                 const response = await fetch('/api/android/send', {
                   method: 'POST',
                   body: formData
@@ -424,6 +467,21 @@ app.MapGet("/", (DeviceIdentityService identityService) =>
               } finally {
                 button.disabled = false;
               }
+            });
+
+            document.getElementById('refreshAndroidButton').addEventListener('click', async () => {
+              const status = document.getElementById('androidSendStatus');
+              status.textContent = 'Refreshing connected Android devices...';
+              fetch('/api/android/refresh-clicked', {
+                method: 'POST'
+              }).catch(() => {});
+              await refreshAndroidDevices();
+              status.textContent = 'Connected Android list refreshed.';
+            });
+
+            document.getElementById('androidDeviceSelect').addEventListener('change', (event) => {
+              window.__selectedAndroidDeviceId = event.target.value || '';
+              refreshAndroidDevices();
             });
 
             refresh();
@@ -449,6 +507,16 @@ app.MapGet("/api/upload/sessions", (UploadStore store) => Results.Ok(store.List(
 app.MapGet("/api/discovery/self", (DeviceIdentityService identityService) => Results.Ok(identityService.GetCurrentDevice()));
 app.MapGet("/api/android/devices", (AndroidDeviceStore store) => Results.Ok(store.List()));
 app.MapGet("/api/android/outbound-transfers", (AndroidOutboundTransferStore store) => Results.Ok(store.List()));
+app.MapPost("/api/android/send-clicked", (HttpRequest request) =>
+{
+    var deviceId = request.Query["deviceId"].ToString();
+    var fileCount = request.Query["fileCount"].ToString();
+    app.Logger.LogInformation(
+        "PC -> Android button clicked. DeviceId={DeviceId}, FileCount={FileCount}",
+        string.IsNullOrWhiteSpace(deviceId) ? "(none)" : deviceId,
+        string.IsNullOrWhiteSpace(fileCount) ? "0" : fileCount);
+    return Results.Ok();
+});
 
 app.MapPost("/api/android/register", (AndroidDeviceRegistrationRequest request, AndroidDeviceStore store) =>
 {
@@ -462,6 +530,127 @@ app.MapPost("/api/android/register", (AndroidDeviceRegistrationRequest request, 
     store.Register(request);
     app.Logger.LogInformation("Android device registered: {DeviceName} -> {ReceiveUrl}", request.DeviceName, request.ReceiveUrl);
     return Results.Ok();
+});
+
+app.MapPost("/api/android/send-offer", async (AndroidBrowserSendOfferRequest request, AndroidDeviceStore deviceStore, AndroidOutboundTransferStore transferStore, CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(request.DeviceId))
+    {
+        return Results.BadRequest(new { message = "deviceId is required." });
+    }
+
+    if (request.Files is null || request.Files.Count == 0)
+    {
+        return Results.BadRequest(new { message = "Choose at least one file to send." });
+    }
+
+    var device = deviceStore.Find(request.DeviceId);
+    if (device is null)
+    {
+        return Results.NotFound(new { message = "Android device is not registered." });
+    }
+
+    using var httpClient = new HttpClient
+    {
+        Timeout = TimeSpan.FromMinutes(15)
+    };
+
+    app.Logger.LogInformation(
+        "PC -> Android send request received. Device={DeviceName}, FileCount={FileCount}",
+        device.DeviceName,
+        request.Files.Count);
+    app.Logger.LogInformation(
+        "PC -> Android step 1/3: building transfer offer for {DeviceName} with {TotalBytes} bytes",
+        device.DeviceName,
+        request.Files.Sum(static x => x.FileSizeBytes));
+
+    var offer = new AndroidTransferOfferRequest(
+        OfferId: Guid.NewGuid().ToString("N"),
+        FileCount: request.Files.Count,
+        TotalBytes: request.Files.Sum(static x => x.FileSizeBytes),
+        Files: request.Files.ToArray());
+
+    transferStore.RegisterPendingOffer(offer.OfferId, request.DeviceId, device.DeviceName, request.Files.ToArray(), "Waiting for Android approval");
+    using (var offerRequest = new HttpRequestMessage(HttpMethod.Post, $"{device.ReceiveUrl}/api/device/offer")
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(offer, jsonOptions),
+                    Encoding.UTF8,
+                    "application/json")
+            })
+    using (var offerResponse = await httpClient.SendAsync(
+               offerRequest,
+               HttpCompletionOption.ResponseHeadersRead,
+               cancellationToken))
+    {
+        app.Logger.LogInformation(
+            "PC -> Android step 2/3: offer sent to {DeviceName}, awaiting Android acknowledgment",
+            device.DeviceName);
+        if (!offerResponse.IsSuccessStatusCode)
+        {
+            string offerResponseText;
+            try
+            {
+                offerResponseText = offerResponse.Content is null
+                    ? string.Empty
+                    : await offerResponse.Content.ReadAsStringAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                offerResponseText = $"Failed to read Android response body: {ex.Message}";
+            }
+
+            app.Logger.LogWarning(
+                "PC -> Android batch offer rejected for {DeviceName}: {ResponseText}",
+                device.DeviceName,
+                offerResponseText);
+            transferStore.UpdateOfferStatus(offer.OfferId, offerResponseText, isCompleted: true);
+            return Results.Json(new { message = offerResponseText }, statusCode: (int)offerResponse.StatusCode);
+        }
+    }
+
+    var approvalDeadline = DateTimeOffset.UtcNow.AddSeconds(60);
+    app.Logger.LogInformation(
+        "PC -> Android step 3/3: waiting for Android approval popup for offer {OfferId}",
+        offer.OfferId);
+    while (DateTimeOffset.UtcNow < approvalDeadline)
+    {
+        using var statusResponse = await httpClient.GetAsync(
+            $"{device.ReceiveUrl}/api/device/offer/status?offerId={offer.OfferId}",
+            cancellationToken);
+        var statusText = await statusResponse.Content.ReadAsStringAsync(cancellationToken);
+        app.Logger.LogInformation(
+            "PC -> Android approval status for offer {OfferId}: {StatusCode} {StatusText}",
+            offer.OfferId,
+            (int)statusResponse.StatusCode,
+            statusText);
+
+        if (statusResponse.StatusCode == HttpStatusCode.Conflict)
+        {
+            app.Logger.LogWarning(
+                "PC -> Android approval declined on Android for offer {OfferId}",
+                offer.OfferId);
+            transferStore.UpdateOfferStatus(offer.OfferId, "Declined on Android", isCompleted: true);
+            return Results.Json(new { message = "Transfer declined on Android." }, statusCode: 409);
+        }
+
+        if (statusResponse.IsSuccessStatusCode && statusText.Contains("\"approved\"", StringComparison.OrdinalIgnoreCase))
+        {
+            app.Logger.LogInformation(
+                "PC -> Android offer {OfferId} approved. Windows can start file upload now",
+                offer.OfferId);
+            transferStore.UpdateOfferStatus(offer.OfferId, "Approved on Android. Waiting for Windows stream");
+            return Results.Ok(new { offerId = offer.OfferId });
+        }
+
+        await Task.Delay(200, cancellationToken);
+    }
+
+    app.Logger.LogWarning(
+        "PC -> Android approval timed out for offer {OfferId}",
+        offer.OfferId);
+    transferStore.UpdateOfferStatus(offer.OfferId, "Android approval timed out", isCompleted: true);
+    return Results.Json(new { message = "Android approval timed out." }, statusCode: 408);
 });
 
 app.MapPost("/api/android/send", async (HttpRequest request, AndroidDeviceStore deviceStore, AndroidOutboundTransferStore transferStore, CancellationToken cancellationToken) =>
@@ -490,74 +679,135 @@ app.MapPost("/api/android/send", async (HttpRequest request, AndroidDeviceStore 
         return Results.BadRequest(new { message = "Choose at least one file to send." });
     }
 
+    var existingOfferId = form["offerId"].ToString();
+
     using var httpClient = new HttpClient
     {
         Timeout = TimeSpan.FromMinutes(15)
     };
 
-    app.Logger.LogInformation(
-        "PC -> Android send request received. Device={DeviceName}, FileCount={FileCount}",
-        device.DeviceName,
-        files.Count);
-
-    var offer = new AndroidTransferOfferRequest(
-        OfferId: Guid.NewGuid().ToString("N"),
-        FileCount: files.Count,
-        TotalBytes: files.Sum(static x => x.Length),
-        Files: files.Select(static file => new AndroidTransferOfferFile(file.FileName, file.Length)).ToArray());
-
-    using (var offerResponse = await httpClient.PostAsJsonAsync(
-               $"{device.ReceiveUrl}/api/device/offer",
-               offer,
-               cancellationToken))
+    var activeOfferId = existingOfferId;
+    if (string.IsNullOrWhiteSpace(activeOfferId))
     {
-        var offerResponseText = await offerResponse.Content.ReadAsStringAsync(cancellationToken);
-        if (!offerResponse.IsSuccessStatusCode)
+        app.Logger.LogInformation(
+            "PC -> Android send request received. Device={DeviceName}, FileCount={FileCount}",
+            device.DeviceName,
+            files.Count);
+        app.Logger.LogInformation(
+            "PC -> Android step 1/5: building transfer offer for {DeviceName} with {TotalBytes} bytes",
+            device.DeviceName,
+            files.Sum(static x => x.Length));
+
+        var offer = new AndroidTransferOfferRequest(
+            OfferId: Guid.NewGuid().ToString("N"),
+            FileCount: files.Count,
+            TotalBytes: files.Sum(static x => x.Length),
+            Files: files.Select(static file => new AndroidTransferOfferFile(file.FileName, file.Length)).ToArray());
+
+        using (var offerRequest = new HttpRequestMessage(HttpMethod.Post, $"{device.ReceiveUrl}/api/device/offer")
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(offer, jsonOptions),
+                        Encoding.UTF8,
+                        "application/json")
+                })
+        using (var offerResponse = await httpClient.SendAsync(
+                   offerRequest,
+                   HttpCompletionOption.ResponseHeadersRead,
+                   cancellationToken))
+        {
+            app.Logger.LogInformation(
+                "PC -> Android step 2/5: offer sent to {DeviceName}, awaiting Android acknowledgment",
+                device.DeviceName);
+            if (!offerResponse.IsSuccessStatusCode)
+            {
+                string offerResponseText;
+                try
+                {
+                    offerResponseText = offerResponse.Content is null
+                        ? string.Empty
+                        : await offerResponse.Content.ReadAsStringAsync(cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    offerResponseText = $"Failed to read Android response body: {ex.Message}";
+                }
+
+                app.Logger.LogWarning(
+                    "PC -> Android batch offer rejected for {DeviceName}: {ResponseText}",
+                    device.DeviceName,
+                    offerResponseText);
+                transferStore.UpdateOfferStatus(offer.OfferId, offerResponseText, isCompleted: true);
+            return Results.Json(new { message = offerResponseText }, statusCode: (int)offerResponse.StatusCode);
+            }
+        }
+
+        var approvalDeadline = DateTimeOffset.UtcNow.AddSeconds(60);
+        app.Logger.LogInformation(
+            "PC -> Android step 3/5: waiting for Android approval popup for offer {OfferId}",
+            offer.OfferId);
+        while (DateTimeOffset.UtcNow < approvalDeadline)
+        {
+            using var statusResponse = await httpClient.GetAsync(
+                $"{device.ReceiveUrl}/api/device/offer/status?offerId={offer.OfferId}",
+                cancellationToken);
+            var statusText = await statusResponse.Content.ReadAsStringAsync(cancellationToken);
+            app.Logger.LogInformation(
+                "PC -> Android approval status for offer {OfferId}: {StatusCode} {StatusText}",
+                offer.OfferId,
+                (int)statusResponse.StatusCode,
+                statusText);
+
+            if (statusResponse.StatusCode == HttpStatusCode.Conflict)
+            {
+                app.Logger.LogWarning(
+                    "PC -> Android approval declined on Android for offer {OfferId}",
+                    offer.OfferId);
+                return Results.Json(new { message = "Transfer declined on Android." }, statusCode: 409);
+            }
+
+            if (statusResponse.IsSuccessStatusCode && statusText.Contains("\"approved\"", StringComparison.OrdinalIgnoreCase))
+            {
+                app.Logger.LogInformation(
+                    "PC -> Android step 4/5: Android approved offer {OfferId}, starting file stream",
+                    offer.OfferId);
+                activeOfferId = offer.OfferId;
+                break;
+            }
+
+            await Task.Delay(200, cancellationToken);
+        }
+
+        if (DateTimeOffset.UtcNow >= approvalDeadline)
         {
             app.Logger.LogWarning(
-                "PC -> Android batch offer rejected for {DeviceName}: {ResponseText}",
-                device.DeviceName,
-                offerResponseText);
-            return Results.Json(
-                new { message = offerResponseText },
-                statusCode: (int)offerResponse.StatusCode);
+                "PC -> Android approval timed out for offer {OfferId}",
+                offer.OfferId);
+            return Results.Json(new { message = "Android approval timed out." }, statusCode: 408);
         }
     }
-
-    var approvalDeadline = DateTimeOffset.UtcNow.AddSeconds(60);
-    while (DateTimeOffset.UtcNow < approvalDeadline)
+    else
     {
-        using var statusResponse = await httpClient.GetAsync(
-            $"{device.ReceiveUrl}/api/device/offer/status?offerId={offer.OfferId}",
-            cancellationToken);
-        var statusText = await statusResponse.Content.ReadAsStringAsync(cancellationToken);
-
-        if (statusResponse.StatusCode == HttpStatusCode.Conflict)
-        {
-            return Results.Json(new { message = "Transfer declined on Android." }, statusCode: 409);
-        }
-
-        if (statusResponse.IsSuccessStatusCode && statusText.Contains("\"approved\"", StringComparison.OrdinalIgnoreCase))
-        {
-            break;
-        }
-
-        await Task.Delay(500, cancellationToken);
-    }
-
-    if (DateTimeOffset.UtcNow >= approvalDeadline)
-    {
-        return Results.Json(new { message = "Android approval timed out." }, statusCode: 408);
+        app.Logger.LogInformation(
+            "PC -> Android upload stream received. Device={DeviceName}, FileCount={FileCount}, OfferId={OfferId}",
+            device.DeviceName,
+            files.Count,
+            activeOfferId);
+        app.Logger.LogInformation(
+            "PC -> Android step 3/3: Android already approved offer {OfferId}, streaming files now",
+            activeOfferId);
     }
 
     var results = new List<AndroidTransferResult>(files.Count);
     foreach (var file in files)
     {
-        var transfer = transferStore.Start(deviceId, device.DeviceName, file.FileName, file.Length);
+        var transfer = string.IsNullOrWhiteSpace(activeOfferId)
+            ? transferStore.Start(deviceId, device.DeviceName, file.FileName, file.Length)
+            : transferStore.GetOrAttachToOffer(activeOfferId, deviceId, device.DeviceName, file.FileName, file.Length);
         try
         {
             app.Logger.LogInformation(
-                "PC -> Android preparing file {FileName} ({FileSizeBytes} bytes) for {DeviceName}",
+                "PC -> Android step 5/5: preparing file {FileName} ({FileSizeBytes} bytes) for {DeviceName}",
                 file.FileName,
                 file.Length,
                 device.DeviceName);
@@ -582,7 +832,7 @@ app.MapPost("/api/android/send", async (HttpRequest request, AndroidDeviceStore 
             };
             outboundRequest.Headers.Add("X-QuickShare-File-Name-Base64", Convert.ToBase64String(Encoding.UTF8.GetBytes(file.FileName)));
             outboundRequest.Headers.Add("X-QuickShare-Device-Id", deviceId);
-            outboundRequest.Headers.Add("X-QuickShare-Offer-Id", offer.OfferId);
+            outboundRequest.Headers.Add("X-QuickShare-Offer-Id", activeOfferId);
 
             app.Logger.LogInformation(
                 "PC -> Android waiting for Android response for {FileName} at {ReceiveUrl}",
@@ -621,7 +871,6 @@ app.MapPost("/api/android/send", async (HttpRequest request, AndroidDeviceStore 
         results
     });
 });
-
 app.MapPost("/api/upload/request", (UploadRequest request, UploadStore store) =>
 {
     if (string.IsNullOrWhiteSpace(request.FileId) ||

@@ -8,6 +8,7 @@ namespace QuickShareClone.Desktop;
 
 public sealed class DashboardForm : Form
 {
+    private const string LocalDashboardUrl = "http://127.0.0.1:5070/";
     private readonly Label _statusLabel;
     private readonly WebView2 _webView;
     private Process? _serverProcess;
@@ -66,20 +67,24 @@ public sealed class DashboardForm : Form
     {
         try
         {
-            Console.WriteLine("[Desktop] Starting dashboard shell");
+            Console.WriteLine($"{Timestamp()} [Desktop] Starting dashboard shell");
+            Console.WriteLine($"{Timestamp()} [Desktop] Step 1/4: checking local server availability");
             var (url, process) = await WaitForServerAsync();
             _serverProcess = process;
+            Console.WriteLine($"{Timestamp()} [Desktop] Step 2/4: creating WebView2 environment");
             var environment = await CreateWebViewEnvironmentAsync();
+            Console.WriteLine($"{Timestamp()} [Desktop] Step 3/4: initializing embedded WebView");
             await _webView.EnsureCoreWebView2Async(environment);
+            _webView.CoreWebView2.WebMessageReceived += CoreWebView2_WebMessageReceived;
             _webView.Source = new Uri(url);
             _statusLabel.Text = $"Connected to {url}";
-            Console.WriteLine($"[Desktop] WebView connected to {url}");
+            Console.WriteLine($"{Timestamp()} [Desktop] Step 4/4: WebView connected to {url}");
             _requestTimer.Start();
         }
         catch (Exception ex)
         {
             _statusLabel.Text = "Server start failed";
-            Console.WriteLine($"[Desktop] Startup failed: {ex}");
+            Console.WriteLine($"{Timestamp()} [Desktop] Startup failed: {ex}");
             MessageBox.Show(this, ex.Message, "Quick Share Clone", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -138,22 +143,24 @@ public sealed class DashboardForm : Form
         {
             if (!string.IsNullOrWhiteSpace(args.Data))
             {
-                Console.WriteLine($"[Server] {args.Data}");
+                Console.WriteLine($"{Timestamp()} [Server] {args.Data}");
             }
         };
         process.ErrorDataReceived += (_, args) =>
         {
             if (!string.IsNullOrWhiteSpace(args.Data))
             {
-                Console.Error.WriteLine($"[Server] {args.Data}");
+                Console.Error.WriteLine($"{Timestamp()} [Server] {args.Data}");
             }
         };
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         process.EnableRaisingEvents = true;
-        Console.WriteLine($"[Desktop] Spawned server process: {serverPath}");
+        Console.WriteLine($"{Timestamp()} [Desktop] Spawned server process: {serverPath}");
         return process;
     }
+
+    private static string Timestamp() => $"[{DateTime.Now:HH:mm:ss.fff}]";
 
     private static async Task<CoreWebView2Environment> CreateWebViewEnvironmentAsync()
     {
@@ -183,14 +190,15 @@ public sealed class DashboardForm : Form
     private static async Task<(string url, Process? process)> WaitForServerAsync()
     {
         using var client = new HttpClient();
-        const string target = "http://127.0.0.1:5070/";
+        const string target = LocalDashboardUrl;
 
         if (await IsServerReachableAsync(client, target))
         {
-            Console.WriteLine("[Desktop] Reusing existing server on port 5070");
+            Console.WriteLine($"{Timestamp()} [Desktop] Reusing existing server on port 5070");
             return (target, null);
         }
 
+        Console.WriteLine($"{Timestamp()} [Desktop] Local server not reachable, starting project server");
         var process = StartServerProcess();
 
         for (var attempt = 0; attempt < 40; attempt++)
@@ -202,9 +210,11 @@ public sealed class DashboardForm : Form
 
             if (await IsServerReachableAsync(client, target))
             {
+                Console.WriteLine($"{Timestamp()} [Desktop] Local server became reachable after {attempt + 1} probe(s)");
                 return (target, process);
             }
 
+            Console.WriteLine($"{Timestamp()} [Desktop] Waiting for local server... attempt {attempt + 1}/40");
             await Task.Delay(500);
         }
 
@@ -255,6 +265,37 @@ public sealed class DashboardForm : Form
         var label = pendingSessions.Count == 1
             ? pendingSessions[0].FileName
             : $"{pendingSessions.Count} files ({FormatSize(totalBytes)})";
+        var previewNames = string.Join(
+            Environment.NewLine,
+            pendingSessions.Take(3).Select(static session => $"• {session.FileName}"));
+        if (pendingSessions.Count > 3)
+        {
+            previewNames += $"{Environment.NewLine}• + {pendingSessions.Count - 3} more";
+        }
+
+        var confirmationText =
+            $"Incoming transfer from Android{Environment.NewLine}{Environment.NewLine}" +
+            $"Files: {pendingSessions.Count}{Environment.NewLine}" +
+            $"Total size: {FormatSize(totalBytes)}{Environment.NewLine}{Environment.NewLine}" +
+            $"{previewNames}{Environment.NewLine}{Environment.NewLine}" +
+            "Press OK to choose the destination folder.";
+
+        var confirmationResult = MessageBox.Show(
+            this,
+            confirmationText,
+            "Receive Files",
+            MessageBoxButtons.OKCancel,
+            MessageBoxIcon.Information);
+
+        if (confirmationResult != DialogResult.OK)
+        {
+            Console.WriteLine($"[Desktop] Incoming transfer confirmation skipped for {label}");
+            foreach (var session in pendingSessions)
+            {
+                _handledPrompts.Remove(session.FileId);
+            }
+            return;
+        }
 
         using var dialog = new FolderBrowserDialog
         {
@@ -291,6 +332,87 @@ public sealed class DashboardForm : Form
             saveResponse.EnsureSuccessStatusCode();
             Console.WriteLine($"[Desktop] Destination approved for {session.FileName}: {dialog.SelectedPath}");
         }
+    }
+
+    private async void CoreWebView2_WebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(e.WebMessageAsJson);
+            if (!document.RootElement.TryGetProperty("type", out var typeElement))
+            {
+                return;
+            }
+
+            var messageType = typeElement.GetString();
+            if (!string.Equals(messageType, "pickAndroidFiles", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            using var dialog = new OpenFileDialog
+            {
+                Title = "Choose files to send to Android",
+                Multiselect = true,
+                CheckFileExists = true,
+                Filter = "All files (*.*)|*.*"
+            };
+
+            if (dialog.ShowDialog(this) != DialogResult.OK || dialog.FileNames.Length == 0)
+            {
+                await PushNativeSelectionToWebAsync(null);
+                return;
+            }
+
+            var files = dialog.FileNames
+                .Select(path =>
+                {
+                    var info = new FileInfo(path);
+                    return new
+                    {
+                        fileName = info.Name,
+                        filePath = info.FullName,
+                        fileSizeBytes = info.Length
+                    };
+                })
+                .ToArray();
+
+            using var client = new HttpClient();
+            var payload = JsonSerializer.Serialize(new { files });
+            using var request = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:5070/api/android/native-selection")
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            };
+            using var response = await client.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+            var body = await response.Content.ReadAsStringAsync();
+            await PushNativeSelectionToWebAsync(body);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"{Timestamp()} [Desktop] Native file picker failed: {ex.Message}");
+            await PushNativeSelectionToWebAsync(JsonSerializer.Serialize(new
+            {
+                type = "nativeAndroidFilesSelected",
+                success = false,
+                message = ex.Message
+            }));
+        }
+    }
+
+    private Task PushNativeSelectionToWebAsync(string? jsonPayload)
+    {
+        if (_webView.CoreWebView2 is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        var payload = string.IsNullOrWhiteSpace(jsonPayload)
+            ? "{\"type\":\"nativeAndroidFilesSelected\",\"cancelled\":true}"
+            : jsonPayload;
+
+        return _webView.CoreWebView2.ExecuteScriptAsync(
+            $"window.onNativeAndroidFilesSelected?.({payload});");
     }
 
     private static string FormatSize(long sizeBytes)
@@ -337,6 +459,7 @@ public sealed class DashboardForm : Form
         {
             if (_webView.CoreWebView2 is not null)
             {
+                _webView.CoreWebView2.WebMessageReceived -= CoreWebView2_WebMessageReceived;
                 _webView.CoreWebView2.Stop();
             }
             _webView.Dispose();
@@ -361,6 +484,10 @@ public sealed class DashboardForm : Form
                 _serverProcess.Dispose();
                 _serverProcess = null;
             }
+            else
+            {
+                StopReusableProjectServer();
+            }
         }
         catch
         {
@@ -373,6 +500,33 @@ public sealed class DashboardForm : Form
         }
         catch
         {
+        }
+    }
+
+    private static void StopReusableProjectServer()
+    {
+        foreach (var process in Process.GetProcessesByName("QuickShareClone.Server"))
+        {
+            try
+            {
+                var processPath = process.MainModule?.FileName ?? string.Empty;
+                if (!processPath.EndsWith("QuickShareClone.Server.exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (process.HasExited)
+                {
+                    continue;
+                }
+
+                Console.WriteLine($"[Desktop] Stopping reused project server process: {processPath}");
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
+            }
+            catch
+            {
+            }
         }
     }
 }
