@@ -1,0 +1,36 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vs/
+
+# VS Code local state
+.vscode/*.log
+
+# .NET
+**/bin/
+**/obj/
+*.user
+*.suo
+*.userprefs
+
+# Android / Gradle
+**/.gradle/
+**/build/
+local.properties
+captures/
+*.apk
+*.aab
+
+# WebView / runtime data
+*.WebView2/
+EBWebView/
+
+# Logs / diagnostics
+*.log
+crashpad_metrics-active.pma
+
+# Temporary / caches
+*.cache
+*.tmp
+*.temp
